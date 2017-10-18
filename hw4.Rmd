@@ -1,0 +1,223 @@
+---
+title: "HW4"
+author: Narad Mishra
+date: 2017-10-18
+output: html_document
+---
+
+*1. Create ExpressionSet*
+ * Clone http://github.com/mdozmorov/63_immune_cells repository on your computer.
+ 
+ *a.* Create Expression matrix
+ - Read in data/counts.txt.gz
+ 
+```{r}
+fulldata<-read.table("counts.txt.gz",header=TRUE, sep="\t", as.is=T)
+```
+
+*b.* Note the first 6 columns are gene annotation columns. Extract them into a separate variable - this is a part of your feature annotation data.
+
+```{r}
+annot<-fulldata[,1:6]
+```
+
+*c.* Extract the other columns into a separate variable -this is your expression matrix.
+```{r}
+expremtx<- fulldata[, -c(1:6)]
+```
+
+*d.* Add row names (probe IDs) to the expression matrix, extracted from column "Geneid". What type of probe ID is it?
+```{r}
+rownames(expremtx) <- fulldata$Geneid
+
+```
+
+ These are Human being probe IDs by ensembl. 
+
+*e.*  Create feature annotation matrix.
+ 
+ -Using the first 6 column extracted above, add gene symbol and description to the corresponding probe IDs. Use biomaRt, merge the returned data. Make sure the number and the order of probe IDs match! How many probe IDs did not have mapping? How many probe IDs have description but no gene symbol?
+ 
+```{r,warning=FALSE, message=FALSE}
+library(biomaRt)
+library(dplyr)
+
+mart <- useMart("ensembl", dataset="hsapiens_gene_ensembl") 
+genes<-getBM(attributes=c('ensembl_gene_id','hgnc_symbol','description'), 
+filters='ensembl_gene_id', values=fulldata$Geneid, mart=mart)#, uniqueRows=T)
+
+
+annotII <- left_join(annot, genes, by = c("Geneid" = "ensembl_gene_id"))
+annotII <- annotII[!duplicated(annotII$Geneid),]
+
+# Probe ID with no match
+sum(is.na(annotII$hgnc_symbol))
+
+#With description but no gene symbol
+length(which(genes$hgnc_symbol=="" & genes$description !=""))
+
+```
+ 
+ * There are 9289 probe IDs that do not have a match. And there are 1503 probe IDs that have description but are missig gene symbol.
+
+*f.* Create sample annotation matrix
+ - Read in data/E-MTAb-2319,sdrf.txt -this is your sample annotation data. How many different cell types are there? How many replicates per cell types?
+ 
+```{r}
+anottIII <- read.table("E-MTAB-2319.sdrf.txt", sep="\t", header = T, as.is = T)
+
+a<-table(anottIII$Characteristics.cell.type.)
+length(a)
+a
+```
+
+There are 13 cell types.
+There are some with 8 and some with 10 replicates per cell type.
+
+```{r}
+table(anottIII$Source.Name)
+```
+
+* Looking at the output of table statement, it seems there are duplicates of each rows. So to assign one row to a gene, the duplicates are deleted.
+
+```{r}
+pdata <- anottIII[which(!duplicated(anottIII$Comment.ENA_RUN.)),]
+dim(pdata)
+rownames(pdata) <- pdata$Comment.ENA_RUN.
+pdata <- pdata[,-which(colnames(pdata)=="Comment.ENA_RUN.")]
+
+colnames(expremtx) <- substr(colnames(expremtx),1,9)
+
+all(rownames(pdata)==colnames(expremtx))
+
+expremtx <- expremtx[,order(colnames(expremtx))]
+pdata <- pdata[order(rownames(pdata)),]
+
+all(rownames(pdata)==colnames(expremtx))
+
+```
+
+*g.* Create a minimal ExpressionSet using expression (assayData) and sample annotation (phenoData) matrix. Print the resulting ExpressionSet.
+
+```{r,message=FALSE, warning=FALSE}
+library(Biobase)
+
+phenoChar <- new("AnnotatedDataFrame", data = pdata)
+
+minphenodata<-ExpressionSet(assayData=as.matrix(expremtx),phenoData = phenoChar)
+
+minphenodata
+
+```
+
+**2. Exploratory data analysis**
+
+*a.* $log_{2}$ transform the expression matrix +1. Why add 1 when log-transforming?
+```{r}
+ Ltransex <- log2(expremtx + 1)
+```
+
+ One is added to avoid having negative infinity. 
+
+*b.* Do boxplot on the expression matrix. Write observation about the data.
+ 
+```{r}
+boxplot(Ltransex)
+```
+
+ 
+
+*c.* How many rows with all zeros are there? Exclude them from the expression matrix.
+
+  * There are 12087 rows with all zero entries.
+```{r}
+library(data.table)
+length(which(rowSums(Ltransex)==0))
+```
+
+* Creating the expressionset with rows that have atleast one non-zero entry.
+```{r}
+
+nonzero <- Ltransex[rowSums(Ltransex) > 0, ]
+
+```
+
+*d.* Get the list of housekeeping genes from http://www.tau.ac.il/~elieis/HKG/ 
+
+```{r, echo=FALSE}
+hkgene<-read.table("HK_genes.txt", header = FALSE)
+```
+
+
+*e.* Separate the expression matrix into two matrices, one containing expression of housekeeping genes and another containing all other genes. What is the mean/median standard deviation across samples of housekeeping genes? Of other genes? If you are to compare two distributions of standard deviations - which test would you use? Applied to the current data, are the standard deviations of housekeeping genes different from the rest of the genes?
+
+* The mean and median of standard deviation for housekeeping and non-housekeeping genes are;
+Mean(SD-housekeeping)=1.922
+Mean(SD-nonhousekeeping)=2.941
+Median(SD-housekeep)=1.899
+Median(SD-nonhousekeeping)=1.899
+
+```{r}
+nonzero<-as.data.frame(nonzero)
+nonzero$Geneid <- rownames(nonzero)
+datwithid<-merge(nonzero, annotII[,c(1,7)], by="Geneid")
+
+exphousek<-datwithid[which(datwithid$hgnc_symbol %in% hkgene$V1),]
+
+exphousek<-subset(exphousek, select=-c(hgnc_symbol,Geneid))
+expnonhous<-datwithid[-which(datwithid$hgnc_symbol %in% hkgene$V1),]
+
+expnonhous<-subset(expnonhous, select=-c(hgnc_symbol,Geneid))
+nonzero<-subset(nonzero, select=-Geneid)
+
+ #finding mean, median of standard deviation
+house<-sapply(exphousek, function(x) sd=sd(x))
+nonhouse<-sapply(expnonhous, function(x) sd=sd(x))
+
+mean(house)
+mean(nonhouse)
+median(house)
+median(house)
+
+```
+
+ * For comparing the two distributions of standard deviation, we would use Kolmogorov-Smirnov test. This is a nonparametric test of the equality of continuous, one-dimensional probability distribution.
+ 
+```{r}
+ks.test(house, nonhouse)
+```
+
+* From the test, we can see that the distribution of two standard deviations from housekeeping gene and nonhousekeeping genes are significantly different (pvalue<0.001). 
+This is because the housekeeping genes express normally and the other genes tends to have either over expressed or underexpressed. 
+
+
+*f.* Summarize median gene expression per cell type. Keep rows annotates with gene symbols. Display the summary expression matrix (gene symbols as rows, cell types as columns, each cell is median expression) as DT::datatable. Optional: Highlight top 100 highest expressed genes for each cell type in the table.1.
+ 
+ 
+ 
+```{r,warning=FALSE,message=FALSE} 
+library(DT)
+#Number of empty space with just the quotation mark.
+length(unique(annotII$hgnc_symbol))
+
+# Number of NAs
+length(which(is.na(annotII$hgnc_symbol))) 
+
+#Number of unique gene symbol.
+length(which(annotII$hgnc_symbol == ""))
+
+
+symname<-unique(na.omit(annotII$hgnc_symbol[annotII$hgnc_symbol != ""])) # Exclude Symbols with NAs and "" (duplicates are excluded with unique)
+genidname<-annotII$Geneid[which(annotII$hgnc_symbol %in% symname)]
+
+lgexpmat<-subset(nonzero, (rownames(nonzero) %in% genidname))
+
+symnamecln<-annotII$hgnc_symbol[which(annotII$Geneid %in% rownames(lgexpmat))]
+
+samplebycelltypes<-split(rownames(pData(minphenodata)),pData(minphenodata)$Characteristics.cell.type)
+summary.express.mat<-as.data.frame(lapply(samplebycelltypes,function(x) { apply(lgexpmat[,x],1,median) }) )
+
+datatable(summary.express.mat, rownames=symnamecln,colnames=colnames(summary.express.mat))
+
+```
+
